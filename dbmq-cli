@@ -1,0 +1,4 @@
+#!/usr/bin/python
+from dbmq import CLI
+c = CLI()
+c.shell()
