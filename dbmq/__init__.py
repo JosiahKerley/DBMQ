@@ -24,20 +24,25 @@ class Client:
 
   ## Globals
   socket = None
-  url = 'tcp://127.0.0.1:8562'
+  linger = None
+  url    = None
 
-  def __init__(self):
+  def __init__(self,linger=-1,url='tcp://127.0.0.1:8562'):
     #self.getSocket()
-    pass
+    self.linger = linger
+    self.url = url
+
 
   def clientSocket(self):
      context = self.zmq.Context.instance()
      self.socket = context.socket(self.zmq.REQ)
+     self.socket.setsockopt(self.zmq.LINGER, self.linger)
      self.socket.connect(self.url)
 
   def serverSocket(self):
      context = self.zmq.Context.instance()
      self.socket = context.socket(self.zmq.REP)
+     self.socket.setsockopt(self.zmq.LINGER, self.linger)
      self.socket.bind(self.url)
 
   def getSocket(self):
@@ -85,22 +90,24 @@ class Database:
   import zmq
   import time
   import yaml
+  import signal
   import threading
 
 
   ## Instances
   log = Logging()
-  client = Client()
+  client = None
 
 
   ## Globals
-  namespace = 'default'
-  persist_file = '%s.persist' % (namespace)
+  namespace    = None
+  persist_file = 'dbmq.persist'
   persist_poll = 1
-  serializer = None
-  url = 'tcp://127.0.0.1:8562'
-  threads = 16
-  ismaster = False
+  serializer   = None
+  url          = None
+  threads      = []
+  ismaster     = False
+  running      = True
 
 
   ## Databases
@@ -108,13 +115,15 @@ class Database:
 
 
   ## Constructor
-  def __init__(self, daemonize=False):
+  def __init__(self, daemonize=False, namespace='default', url='tcp://127.0.0.1:8562',linger=-1):
     self.persist_file = self.os.path.abspath(self.persist_file)
-    #self.client.url = self.url
     self.serializer = self.yaml
+    self.client = Client(linger=linger,url=url)
+    self.namespace = namespace
     if daemonize:
       r = self.threading.Thread(target=self.daemon)
       r.start()
+      self.threads.append({"name":"dameon","thread":r})
 
 
   ## Persist file handling
@@ -135,7 +144,7 @@ class Database:
       try:   f.write(self.dump(self.db))
       except: self.log.crit('Cannot save persist file')
   def handler_persist(self):
-    while True:
+    while self.running:
       self.dumpPersist()
       self.time.sleep(self.persist_poll)
 
@@ -239,14 +248,22 @@ class Database:
   def index(self, queue):
     message = {'type':'queue', 'action':'index', 'queue':queue} 
     if self.client.send(message):
+      print 'top'
       retVal = self.client.recv()
+      print 'bottom'
+      print retVal
+      print '!!!'
       return(retVal)
   def raw_index(self, queue):
-    try:
-      retVal = self.db[self.namespace]['queue'][queue]
+    #try:
+    if 1:
+      retVal = self.db[self.namespace]['queue'][queue]['payload']
+      print '!!!!!!!'
+      print retVal
+      print '!!!!!!!'
       return(retVal)
-    except:
-      return(False)
+    #except:
+    #  return(False)
   def drop(self, queue):
     message = {'type':'queue', 'action':'drop', 'queue':queue} 
     if self.client.send(message):
@@ -313,12 +330,11 @@ class Database:
 
   ## Handler thread
   def handler_request(self):
-    #try:
-    if 1:
+    try:
       server = Client()
       server.getSocket = server.serverSocket
       unknown_type = {'status':False, 'message':'Action Unknown'}
-      while True:
+      while self.running:
         self.ismaster = True
         message = server.recv()
         response = {'status':True}
@@ -363,14 +379,14 @@ class Database:
           server.send(response)
         else:
           self.log.err('Message returned error.')
-    #except:
-    #  self.ismaster = False
+    except:
+      self.ismaster = False
 
 
   ## Daemon
   def daemon(self):
     m = False
-    while True:
+    while self.running:
       if self.ismaster:
         if not m: self.loadPersist()
         m = True
@@ -378,11 +394,18 @@ class Database:
       else:
         m = False
         r = self.threading.Thread(target=self.handler_request)
+        r.isDaemon()
         r.start()
+        self.threads.append({"name":"handler","thread":r})
       self.time.sleep(1)
 
 
-
+  ## Stop
+  def stop(self):
+    self.ismaster = False
+    self.running  = False
+    self.time.sleep(1)
+    self.os.kill(self.os.getpid(), self.signal.SIGQUIT)
 
 
 
